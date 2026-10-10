@@ -28,6 +28,8 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
+import androidx.webkit.WebViewCompat
+import androidx.webkit.WebViewFeature
 import java.io.ByteArrayInputStream
 
 class MainActivity : AppCompatActivity() {
@@ -36,24 +38,122 @@ class MainActivity : AppCompatActivity() {
         private const val START_URL = "https://mapple.rip"
         private const val OFFLINE_URL = "file:///android_asset/offline.html"
 
-        // Daftar awal domain iklan yang diblokir. Tambahkan domain lain di sini jika perlu.
+        // Daftar domain iklan yang diblokir. Tambahkan domain lain di sini jika perlu.
         private val BLOCKED_HOSTS = setOf(
-            "doubleclick.net",
-            "googlesyndication.com",
-            "googleadservices.com",
-            "adservice.google.com",
-            "adnxs.com",
-            "popads.net",
-            "popcash.net",
-            "propellerads.com",
-            "exoclick.com",
-            "adsterra.com",
-            "juicyads.com",
-            "trafficjunky.net",
-            "clickadu.com",
-            "hilltopads.net",
-            "onclickads.net"
+            "doubleclick.net", "googlesyndication.com", "googleadservices.com",
+            "adservice.google.com", "2mdn.net", "amazon-adsystem.com",
+            "adnxs.com", "adform.net", "pubmatic.com", "rubiconproject.com",
+            "criteo.com", "openx.net", "smartadserver.com",
+            "popads.net", "popcash.net", "propellerads.com", "propellerclick.com",
+            "exoclick.com", "exosrv.com", "exdynsrv.com", "realsrv.com",
+            "adsterra.com", "highperformanceformat.com",
+            "juicyads.com", "trafficjunky.net", "clickadu.com", "hilltopads.net",
+            "onclickads.net", "adcash.com", "tsyndicate.com", "a-ads.com",
+            "coinzilla.com", "bidvertiser.com", "adspyglass.com", "ero-advertising.com",
+            "mgid.com", "taboola.com", "outbrain.com", "revcontent.com", "zedo.com"
         )
+
+        // Skrip yang berjalan di halaman dan di semua iframe (pemutar video):
+        // menyembunyikan iframe iklan (ukuran banner standar / domain iklan) dan
+        // lapisan overlay iklan yang menutupi layar.
+        private val CLEANER_JS = """
+(function () {
+  if (window.__mappleCleaner) return;
+  window.__mappleCleaner = true;
+
+  var AD_SIZES = ["300x250","336x280","728x90","320x50","468x60","300x600","160x600",
+                  "970x250","320x100","970x90","250x250","300x50","120x600","180x150","200x200"];
+  var AD_SRC = /(doubleclick|googlesyndication|googleadservices|adservice|adsterra|highperformanceformat|exoclick|exosrv|realsrv|exdynsrv|popads|popcash|propeller|juicyads|trafficjunky|clickadu|hilltopads|onclickads|adnxs|adcash|mgid|taboola|outbrain|revcontent|tsyndicate|a-ads|coinzilla|bidvertiser|adspyglass|ero-advertising)/i;
+  var CSS = 'ins.adsbygoogle,[id^="google_ads"],[id^="div-gpt-ad"],iframe[src*="doubleclick"],iframe[src*="googlesyndication"],iframe[src*="adsterra"]{display:none!important}';
+
+  function hide(el) {
+    try {
+      el.style.setProperty('display', 'none', 'important');
+      el.setAttribute('data-mapple-hidden', '1');
+    } catch (e) {}
+  }
+
+  function positionedAncestor(el) {
+    var p = el, n = 0;
+    while (p && p !== document.body && p !== document.documentElement && n < 5) {
+      var cs = getComputedStyle(p);
+      if (cs.position === 'fixed' || cs.position === 'absolute' || cs.position === 'sticky') return p;
+      p = p.parentElement;
+      n++;
+    }
+    return null;
+  }
+
+  function scan() {
+    if (!document.body) return;
+    var vw = window.innerWidth, vh = window.innerHeight;
+
+    var frames = document.getElementsByTagName('iframe');
+    for (var i = 0; i < frames.length; i++) {
+      var f = frames[i];
+      if (f.getAttribute('data-mapple-hidden')) continue;
+      var r = f.getBoundingClientRect();
+      var key = Math.round(r.width) + 'x' + Math.round(r.height);
+      if (AD_SRC.test(f.src || '') || AD_SIZES.indexOf(key) >= 0) {
+        var box = positionedAncestor(f);
+        if (box) {
+          var br = box.getBoundingClientRect();
+          if (br.width * br.height < vw * vh * 0.6) { hide(box); continue; }
+        }
+        hide(f);
+      }
+    }
+
+    var kids = document.body.children;
+    for (var j = 0; j < kids.length; j++) {
+      var el = kids[j];
+      if (el.getAttribute('data-mapple-hidden')) continue;
+      var tag = el.tagName;
+      if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'LINK') continue;
+      var cs = getComputedStyle(el);
+      if (cs.display === 'none') continue;
+      if (cs.position !== 'fixed' && cs.position !== 'absolute') continue;
+      if (el.querySelector('video')) continue;
+      if (el.querySelector('iframe:not([data-mapple-hidden])')) continue;
+      var z = parseInt(cs.zIndex, 10) || 0;
+      var rect = el.getBoundingClientRect();
+      var big = rect.width * rect.height > vw * vh * 0.5;
+      var empty = (el.innerText || '').replace(/\s+/g, '') === '' &&
+                  !el.querySelector('input,button,img,svg');
+      if (z >= 2147483000) { hide(el); }
+      else if (big && z >= 999 && empty) { hide(el); }
+    }
+  }
+
+  var timer = null;
+  function schedule() {
+    if (timer) return;
+    timer = setTimeout(function () {
+      timer = null;
+      try { scan(); } catch (e) {}
+    }, 400);
+  }
+
+  function start() {
+    try {
+      var st = document.createElement('style');
+      st.textContent = CSS;
+      (document.head || document.documentElement).appendChild(st);
+    } catch (e) {}
+    try { scan(); } catch (e) {}
+    try {
+      new MutationObserver(schedule).observe(document.documentElement, { childList: true, subtree: true });
+    } catch (e) {}
+    setInterval(function () { try { scan(); } catch (e) {} }, 2000);
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', start);
+  } else {
+    start();
+  }
+})();
+"""
     }
 
     private lateinit var root: FrameLayout
@@ -67,6 +167,7 @@ class MainActivity : AppCompatActivity() {
     // Domain yang boleh dibuka di jendela utama (ditambah otomatis dari halaman pertama)
     private val allowedHosts = mutableSetOf("mapple.rip")
     private var firstLoadDone = false
+    private var cleanerViaDocStart = false
 
     // Untuk upload file
     private var filePathCallback: ValueCallback<Array<Uri>>? = null
@@ -136,6 +237,12 @@ class MainActivity : AppCompatActivity() {
             javaScriptCanOpenWindowsAutomatically = false
         }
 
+        // Pasang pembersih iklan di setiap halaman dan iframe (jika didukung WebView)
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+            WebViewCompat.addDocumentStartJavaScript(webView, CLEANER_JS, setOf("*"))
+            cleanerViaDocStart = true
+        }
+
         webView.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                 val uri = request.url
@@ -186,7 +293,10 @@ class MainActivity : AppCompatActivity() {
             override fun onPageFinished(view: WebView, url: String?) {
                 progress.visibility = View.GONE
                 swipe.isRefreshing = false
-                if (url != null && url.startsWith("http")) firstLoadDone = true
+                if (url != null && url.startsWith("http")) {
+                    firstLoadDone = true
+                    if (!cleanerViaDocStart) view.evaluateJavascript(CLEANER_JS, null)
+                }
             }
 
             override fun onReceivedError(
