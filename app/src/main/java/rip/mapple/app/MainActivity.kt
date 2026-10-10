@@ -6,6 +6,9 @@ import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.os.Message
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
@@ -51,6 +54,21 @@ class MainActivity : AppCompatActivity() {
             filePathCallback = null
         }
 
+    // Ambil domain induk, misal "www.mapple.rip" -> "mapple.rip"
+    private fun rootDomain(host: String): String {
+        val parts = host.lowercase().split(".")
+        return if (parts.size <= 2) host.lowercase() else parts.takeLast(2).joinToString(".")
+    }
+
+    // true jika host berasal dari situs yang sedang dibuka (atau mapple.rip)
+    private fun isSameSite(host: String?): Boolean {
+        if (host == null) return false
+        val target = rootDomain(host)
+        if (target == "mapple.rip") return true
+        val current = webView.url?.let { Uri.parse(it).host }
+        return current != null && rootDomain(current) == target
+    }
+
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
@@ -92,7 +110,10 @@ class MainActivity : AppCompatActivity() {
             mediaPlaybackRequiresUserGesture = false
             loadWithOverviewMode = true
             useWideViewPort = true
-            setSupportMultipleWindows(false)
+            // Jendela baru dicegat lewat onCreateWindow; popup otomatis tanpa klik
+            // ditolak langsung oleh WebView.
+            setSupportMultipleWindows(true)
+            javaScriptCanOpenWindowsAutomatically = false
         }
 
         webView.webViewClient = object : WebViewClient() {
@@ -134,6 +155,50 @@ class MainActivity : AppCompatActivity() {
         webView.webChromeClient = object : WebChromeClient() {
             override fun onProgressChanged(view: WebView, newProgress: Int) {
                 progress.progress = newProgress
+            }
+
+            // Popup / jendela baru: hanya situs sendiri yang dibuka, domain lain diblokir
+            override fun onCreateWindow(
+                view: WebView?,
+                isDialog: Boolean,
+                isUserGesture: Boolean,
+                resultMsg: Message?
+            ): Boolean {
+                if (resultMsg == null) return false
+                val transport = resultMsg.obj as? WebView.WebViewTransport ?: return false
+                val temp = WebView(this@MainActivity)
+                temp.webViewClient = object : WebViewClient() {
+                    private var handled = false
+
+                    private fun handle(v: WebView, url: String?) {
+                        if (handled || url == null || url == "about:blank") return
+                        handled = true
+                        val host = Uri.parse(url).host
+                        if (isSameSite(host)) {
+                            webView.loadUrl(url)
+                        } else {
+                            Toast.makeText(
+                                this@MainActivity,
+                                "Popup iklan diblokir",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        }
+                        v.stopLoading()
+                        Handler(Looper.getMainLooper()).post { v.destroy() }
+                    }
+
+                    override fun shouldOverrideUrlLoading(v: WebView, request: WebResourceRequest): Boolean {
+                        handle(v, request.url.toString())
+                        return true
+                    }
+
+                    override fun onPageStarted(v: WebView, url: String?, favicon: Bitmap?) {
+                        handle(v, url)
+                    }
+                }
+                transport.webView = temp
+                resultMsg.sendToTarget()
+                return true
             }
 
             // Upload file

@@ -1,4 +1,4 @@
-# Mapple App
+# MappleAppQ
 
 Aplikasi Android (WebView) untuk https://mapple.rip
 
