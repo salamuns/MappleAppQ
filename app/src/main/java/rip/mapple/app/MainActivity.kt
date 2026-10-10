@@ -17,35 +17,30 @@ class MainActivity : AppCompatActivity() {
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        
-        // Inisialisasi WebView (sesuaikan dengan Layout / ViewBinding milik Anda)
+
         webView = WebView(this)
         setContentView(webView)
 
         setupWebViewSettings()
         setupWebViewClients()
 
-        // Muat URL utama aplikasi Anda
+        // Ganti URL berikut dengan URL utama proyek Anda
         webView.loadUrl("https://example.com")
     }
 
     @SuppressLint("SetJavaScriptEnabled")
     private fun setupWebViewSettings() {
         val settings: WebSettings = webView.settings
-
-        // 1. Aktifkan JavaScript yang dibutuhkan situs web
         settings.javaScriptEnabled = true
         settings.domStorageEnabled = true
 
-        // 2. MATIKAN izin pembuat window/pop-up otomatis dari JavaScript
+        // Blokir pembuatan jendela/pop-up baru oleh JavaScript
         settings.javaScriptCanOpenWindowsAutomatically = false
-
-        // 3. MATIKAN dukungan banyak window (mencegah target="_blank" membuka tab/window baru)
         settings.setSupportMultipleWindows(false)
     }
 
     private fun setupWebViewClients() {
-        // Blokir pembuatan window baru via WebChromeClient
+        // Blokir pop-up window baru
         webView.webChromeClient = object : WebChromeClient() {
             override fun onCreateWindow(
                 view: WebView?,
@@ -53,12 +48,11 @@ class MainActivity : AppCompatActivity() {
                 isUserGesture: Boolean,
                 resultMsg: Message?
             ): Boolean {
-                // Mengembalikan nilai 'false' memberitahu sistem untuk menolak pembukaan pop-up
                 return false
             }
         }
 
-        // Kontrol navigasi URL via WebViewClient
+        // Kontrol navigasi URL untuk cegah redirect iklan
         webView.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(
                 view: WebView?,
@@ -66,19 +60,17 @@ class MainActivity : AppCompatActivity() {
             ): Boolean {
                 val url = request?.url?.toString() ?: return false
 
-                // Contoh logika penanganan URL:
-                // Hanya izinkan navigasi jika URL berasal dari domain utama Anda
+                // Izinkan navigasi jika tetap di domain utama Anda
                 if (url.contains("example.com")) {
-                    return false // 'false' berarti WebView akan memuat URL di halaman saat ini
+                    return false
                 }
 
-                // Blokir pengalihan/redirect ke URL luar atau iklan
-                return true // 'true' berarti permintaan navigasi ditolak/dibatalkan
+                // Blokir navigasi ke domain/iklan luar
+                return true
             }
         }
     }
 
-    // Tangani tombol Back fisik agar navigasi WebView bisa kembali ke halaman sebelumnya
     override fun onBackPressed() {
         if (webView.canGoBack()) {
             webView.goBack()
@@ -87,4 +79,3 @@ class MainActivity : AppCompatActivity() {
         }
     }
 }
- 
