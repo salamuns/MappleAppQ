@@ -6,7 +6,6 @@ import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.os.Message
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
@@ -37,6 +36,10 @@ class MainActivity : AppCompatActivity() {
     companion object {
         private const val START_URL = "https://mapple.rip"
         private const val OFFLINE_URL = "file:///android_asset/offline.html"
+
+        // true = pembersih iklan JavaScript aktif. Jika ada bagian website yang hilang/tidak
+        // bisa diklik, ubah menjadi false.
+        private const val ENABLE_CLEANER = true
 
         // Daftar domain iklan yang diblokir. Tambahkan domain lain di sini jika perlu.
         private val BLOCKED_HOSTS = setOf(
@@ -290,9 +293,6 @@ class MainActivity : AppCompatActivity() {
     private var customViewCallback: WebChromeClient.CustomViewCallback? = null
     private var failedUrl: String? = null
 
-    // Domain yang boleh dibuka di jendela utama (ditambah otomatis dari halaman pertama)
-    private val allowedHosts = mutableSetOf("mapple.rip")
-    private var firstLoadDone = false
     private var cleanerViaDocStart = false
 
     // Untuk upload file
@@ -311,11 +311,6 @@ class MainActivity : AppCompatActivity() {
     private fun isBlockedHost(host: String?): Boolean {
         if (host == null) return false
         return BLOCKED_HOSTS.any { hostMatches(host, it) }
-    }
-
-    private fun isAllowedHost(host: String?): Boolean {
-        if (host == null) return true
-        return allowedHosts.any { hostMatches(host, it) }
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -358,13 +353,14 @@ class MainActivity : AppCompatActivity() {
             mediaPlaybackRequiresUserGesture = false
             loadWithOverviewMode = true
             useWideViewPort = true
-            // Agar window.open() bisa dicegat (dan diblokir) lewat onCreateWindow
-            setSupportMultipleWindows(true)
+            // Link "tab baru" dan window.open() akibat klik dibuka di jendela yang sama;
+            // popup otomatis tanpa klik tetap ditolak.
+            setSupportMultipleWindows(false)
             javaScriptCanOpenWindowsAutomatically = false
         }
 
         // Pasang pembersih iklan di setiap halaman dan iframe (jika didukung WebView)
-        if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+        if (ENABLE_CLEANER && WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
             WebViewCompat.addDocumentStartJavaScript(webView, CLEANER_JS, setOf("*"))
             cleanerViaDocStart = true
         }
@@ -375,21 +371,16 @@ class MainActivity : AppCompatActivity() {
                 val host = uri.host
                 return when (uri.scheme) {
                     "http", "https" -> {
-                        if (!request.isForMainFrame) {
-                            false
-                        } else if (!firstLoadDone && host != null) {
-                            // Halaman pertama (termasuk redirect resminya) selalu diizinkan
-                            allowedHosts.add(host)
-                            false
-                        } else if (isAllowedHost(host)) {
-                            false
-                        } else {
+                        // Semua link bebas dibuka, kecuali domain iklan yang dikenal
+                        if (request.isForMainFrame && isBlockedHost(host)) {
                             Toast.makeText(
                                 this@MainActivity,
-                                "Redirect diblokir: $host",
+                                "Iklan diblokir: $host",
                                 Toast.LENGTH_SHORT
                             ).show()
                             true
+                        } else {
+                            false
                         }
                     }
                     "file", "about", "data", "blob", "javascript" -> false
@@ -419,9 +410,8 @@ class MainActivity : AppCompatActivity() {
             override fun onPageFinished(view: WebView, url: String?) {
                 progress.visibility = View.GONE
                 swipe.isRefreshing = false
-                if (url != null && url.startsWith("http")) {
-                    firstLoadDone = true
-                    if (!cleanerViaDocStart) view.evaluateJavascript(CLEANER_JS, null)
+                if (ENABLE_CLEANER && !cleanerViaDocStart && url != null && url.startsWith("http")) {
+                    view.evaluateJavascript(CLEANER_JS, null)
                 }
             }
 
@@ -440,17 +430,6 @@ class MainActivity : AppCompatActivity() {
         webView.webChromeClient = object : WebChromeClient() {
             override fun onProgressChanged(view: WebView, newProgress: Int) {
                 progress.progress = newProgress
-            }
-
-            // Blokir semua popup / jendela baru (kebanyakan iklan)
-            override fun onCreateWindow(
-                view: WebView?,
-                isDialog: Boolean,
-                isUserGesture: Boolean,
-                resultMsg: Message?
-            ): Boolean {
-                Toast.makeText(this@MainActivity, "Popup diblokir", Toast.LENGTH_SHORT).show()
-                return false
             }
 
             // Upload file
