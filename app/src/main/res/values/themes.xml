@@ -1,0 +1,16 @@
+<resources>
+    <style name="Theme.Mapple" parent="Theme.AppCompat.DayNight.NoActionBar">
+        <item name="android:windowBackground">@color/app_background</item>
+        <item name="android:statusBarColor">@color/app_background</item>
+        <item name="android:navigationBarColor">@color/app_background</item>
+    </style>
+
+    <style name="Theme.Mapple.Splash" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">@color/ic_launcher_background</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/ic_launcher_foreground</item>
+        <item name="postSplashScreenTheme">@style/Theme.Mapple</item>
+    </style>
+
+    <color name="ic_launcher_background">#FFFFFF</color>
+    <color name="app_background">#1E1E2E</color>
+</resources>
