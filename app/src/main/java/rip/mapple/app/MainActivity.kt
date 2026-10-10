@@ -54,8 +54,8 @@ class MainActivity : AppCompatActivity() {
         )
 
         // Skrip yang berjalan di halaman dan di semua iframe (pemutar video):
-        // menyembunyikan iframe iklan (ukuran banner standar / domain iklan) dan
-        // lapisan overlay iklan yang menutupi layar.
+        // menyembunyikan iframe iklan, overlay iklan di atas pemutar video, dan
+        // elemen yang ditekan-tahan (700 ms) oleh pengguna.
         private val CLEANER_JS = """
 (function () {
   if (window.__mappleCleaner) return;
@@ -65,6 +65,10 @@ class MainActivity : AppCompatActivity() {
                   "970x250","320x100","970x90","250x250","300x50","120x600","180x150","200x200"];
   var AD_SRC = /(doubleclick|googlesyndication|googleadservices|adservice|adsterra|highperformanceformat|exoclick|exosrv|realsrv|exdynsrv|popads|popcash|propeller|juicyads|trafficjunky|clickadu|hilltopads|onclickads|adnxs|adcash|mgid|taboola|outbrain|revcontent|tsyndicate|a-ads|coinzilla|bidvertiser|adspyglass|ero-advertising)/i;
   var CSS = 'ins.adsbygoogle,[id^="google_ads"],[id^="div-gpt-ad"],iframe[src*="doubleclick"],iframe[src*="googlesyndication"],iframe[src*="adsterra"]{display:none!important}';
+
+  function hostOf(u) {
+    try { return new URL(u, location.href).host; } catch (e) { return ''; }
+  }
 
   function hide(el) {
     try {
@@ -84,7 +88,8 @@ class MainActivity : AppCompatActivity() {
     return null;
   }
 
-  function scan() {
+  /* ---------- 1. iframe iklan & overlay level atas ---------- */
+  function scanBasic() {
     if (!document.body) return;
     var vw = window.innerWidth, vh = window.innerHeight;
 
@@ -125,13 +130,123 @@ class MainActivity : AppCompatActivity() {
     }
   }
 
-  var timer = null;
-  function schedule() {
-    if (timer) return;
-    timer = setTimeout(function () {
-      timer = null;
-      try { scan(); } catch (e) {}
-    }, 400);
+  /* ---------- 2. lapisan yang menutupi pemutar video ---------- */
+  function mainTarget() {
+    var best = null, bestA = 0, i, r, a;
+    var vids = document.getElementsByTagName('video');
+    for (i = 0; i < vids.length; i++) {
+      r = vids[i].getBoundingClientRect();
+      a = r.width * r.height;
+      if (a > bestA && r.width >= 200 && r.height >= 100) { best = vids[i]; bestA = a; }
+    }
+    if (best) return best;
+    var fr = document.getElementsByTagName('iframe');
+    for (i = 0; i < fr.length; i++) {
+      if (fr[i].getAttribute('data-mapple-hidden')) continue;
+      if (AD_SRC.test(fr[i].src || '')) continue;
+      r = fr[i].getBoundingClientRect();
+      a = r.width * r.height;
+      if (a > bestA && r.width >= 200 && r.height >= 100) { best = fr[i]; bestA = a; }
+    }
+    return best;
+  }
+
+  function looksLikeAd(box, targetArea) {
+    if (box.tagName === 'IFRAME' || box.tagName === 'INS') return true;
+    if (box.querySelector('iframe, ins')) return true;
+    var links = box.querySelectorAll('a[href]');
+    for (var i = 0; i < links.length; i++) {
+      var h = hostOf(links[i].getAttribute('href'));
+      if (h && h !== location.host) return true;
+    }
+    var imgs = box.querySelectorAll('img[src]');
+    for (var j = 0; j < imgs.length; j++) {
+      var ir = imgs[j].getBoundingClientRect();
+      var ih = hostOf(imgs[j].getAttribute('src'));
+      if (ih && ih !== location.host && ir.width * ir.height >= targetArea * 0.25) return true;
+    }
+    return false;
+  }
+
+  function checkCover() {
+    var t = mainTarget();
+    if (!t) return;
+    var r = t.getBoundingClientRect();
+    var ta = r.width * r.height;
+    var pts = [[0.5, 0.5], [0.3, 0.5], [0.7, 0.5], [0.5, 0.3], [0.5, 0.7]];
+    for (var k = 0; k < pts.length; k++) {
+      var x = r.left + r.width * pts[k][0];
+      var y = r.top + r.height * pts[k][1];
+      if (x < 0 || y < 0 || x > window.innerWidth || y > window.innerHeight) continue;
+      var e = document.elementFromPoint(x, y);
+      if (!e || e === t || t.contains(e) || e.contains(t)) continue;
+      if (e === document.body || e === document.documentElement) continue;
+      var box = e;
+      while (box.parentElement && box.parentElement !== document.body &&
+             box.parentElement !== document.documentElement && !box.parentElement.contains(t)) {
+        box = box.parentElement;
+      }
+      if (box.getAttribute('data-mapple-hidden')) continue;
+      var br = box.getBoundingClientRect();
+      if (br.width * br.height >= ta * 0.4 && looksLikeAd(box, ta)) {
+        hide(box);
+        return;
+      }
+    }
+  }
+
+  function scan() {
+    try { scanBasic(); } catch (e) {}
+    try { checkCover(); } catch (e) {}
+  }
+
+  /* ---------- 3. tekan-tahan untuk menyembunyikan elemen ---------- */
+  function describe(el) {
+    var d = el.tagName.toLowerCase();
+    if (el.id) d += '#' + el.id;
+    if (el.className && typeof el.className === 'string') {
+      d += '.' + el.className.trim().split(/\s+/).slice(0, 2).join('.');
+    }
+    var u = el.src || el.href || '';
+    if (u) d += ' [' + hostOf(u) + ']';
+    return d.slice(0, 120);
+  }
+
+  function toast(msg) {
+    try {
+      var t = document.createElement('div');
+      t.textContent = msg;
+      t.style.cssText = 'position:fixed;left:8px;right:8px;bottom:8px;z-index:2147483647;' +
+        'background:rgba(0,0,0,.8);color:#fff;font:12px sans-serif;padding:8px;' +
+        'border-radius:6px;pointer-events:none';
+      (document.body || document.documentElement).appendChild(t);
+      setTimeout(function () { try { t.remove(); } catch (e) {} }, 4000);
+    } catch (e) {}
+  }
+
+  var lpTimer = null, lpX = 0, lpY = 0;
+  function cancelLp() { if (lpTimer) { clearTimeout(lpTimer); lpTimer = null; } }
+
+  function onTouchStart(ev) {
+    if (!ev.touches || ev.touches.length !== 1) { cancelLp(); return; }
+    lpX = ev.touches[0].clientX;
+    lpY = ev.touches[0].clientY;
+    cancelLp();
+    lpTimer = setTimeout(function () {
+      lpTimer = null;
+      var el = document.elementFromPoint(lpX, lpY);
+      if (!el || el === document.body || el === document.documentElement) return;
+      if (el.tagName === 'VIDEO') return;
+      var box = positionedAncestor(el) || el;
+      hide(box);
+      toast('Disembunyikan: ' + describe(box));
+    }, 700);
+  }
+
+  function onTouchMove(ev) {
+    if (!lpTimer || !ev.touches || !ev.touches.length) return;
+    var dx = ev.touches[0].clientX - lpX, dy = ev.touches[0].clientY - lpY;
+    if (dx * dx + dy * dy > 144) cancelLp();
   }
 
   function start() {
@@ -140,11 +255,22 @@ class MainActivity : AppCompatActivity() {
       st.textContent = CSS;
       (document.head || document.documentElement).appendChild(st);
     } catch (e) {}
-    try { scan(); } catch (e) {}
+    scan();
+
+    var timer = null;
+    function schedule() {
+      if (timer) return;
+      timer = setTimeout(function () { timer = null; scan(); }, 300);
+    }
     try {
       new MutationObserver(schedule).observe(document.documentElement, { childList: true, subtree: true });
     } catch (e) {}
-    setInterval(function () { try { scan(); } catch (e) {} }, 2000);
+    setInterval(scan, 1000);
+
+    document.addEventListener('touchstart', onTouchStart, { passive: true, capture: true });
+    document.addEventListener('touchmove', onTouchMove, { passive: true, capture: true });
+    document.addEventListener('touchend', cancelLp, { passive: true, capture: true });
+    document.addEventListener('touchcancel', cancelLp, { passive: true, capture: true });
   }
 
   if (document.readyState === 'loading') {
