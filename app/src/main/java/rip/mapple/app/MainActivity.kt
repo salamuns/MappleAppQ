@@ -6,6 +6,10 @@ import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.os.Message
+import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
@@ -18,6 +22,7 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
 import android.widget.ProgressBar
+import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
@@ -293,7 +298,17 @@ class MainActivity : AppCompatActivity() {
     private var customViewCallback: WebChromeClient.CustomViewCallback? = null
     private var failedUrl: String? = null
 
+    // Domain yang boleh dibuka di jendela utama: situs sendiri (+ redirect halaman pertama)
+    // dan domain yang pernah Anda izinkan lewat bar "ketuk untuk izinkan".
+    private val allowedHosts = mutableSetOf("mapple.rip")
+    private var firstLoadDone = false
     private var cleanerViaDocStart = false
+
+    private lateinit var blockedBar: TextView
+    private var pendingUrl: String? = null
+    private var pendingHost: String? = null
+    private val hideBar = Runnable { blockedBar.visibility = View.GONE }
+    private val prefs by lazy { getSharedPreferences("mapple", MODE_PRIVATE) }
 
     // Untuk upload file
     private var filePathCallback: ValueCallback<Array<Uri>>? = null
@@ -313,10 +328,34 @@ class MainActivity : AppCompatActivity() {
         return BLOCKED_HOSTS.any { hostMatches(host, it) }
     }
 
+    private fun isAllowedHost(host: String?): Boolean {
+        if (host == null) return true
+        return allowedHosts.any { hostMatches(host, it) }
+    }
+
+    private fun allowHost(host: String) {
+        allowedHosts.add(host)
+        val saved = HashSet<String>()
+        prefs.getStringSet("allowed", null)?.let { saved.addAll(it) }
+        saved.add(host)
+        prefs.edit().putStringSet("allowed", saved).apply()
+    }
+
+    // Tampilkan bar kecil di bawah: ketuk untuk tetap membuka halaman yang diblokir
+    private fun showBlocked(host: String?, url: String) {
+        pendingUrl = url
+        pendingHost = host
+        blockedBar.text = "Diblokir: ${host ?: url}\nKetuk di sini jika ini halaman yang Anda mau"
+        blockedBar.visibility = View.VISIBLE
+        blockedBar.removeCallbacks(hideBar)
+        blockedBar.postDelayed(hideBar, 5000)
+    }
+
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
         super.onCreate(savedInstanceState)
+        prefs.getStringSet("allowed", null)?.let { allowedHosts.addAll(it) }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             val lp = window.attributes
@@ -344,6 +383,28 @@ class MainActivity : AppCompatActivity() {
         }
         root.addView(swipe, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
         root.addView(progress, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 8))
+        blockedBar = TextView(this).apply {
+            setBackgroundColor(0xE6000000.toInt())
+            setTextColor(0xFFFFFFFF.toInt())
+            textSize = 13f
+            gravity = Gravity.CENTER
+            val pad = (14 * resources.displayMetrics.density).toInt()
+            setPadding(pad, pad, pad, pad)
+            visibility = View.GONE
+            setOnClickListener {
+                pendingHost?.let { allowHost(it) }
+                pendingUrl?.let { webView.loadUrl(it) }
+                visibility = View.GONE
+            }
+        }
+        root.addView(
+            blockedBar,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM
+            )
+        )
         setContentView(root)
         applyFullscreen()
 
@@ -353,9 +414,9 @@ class MainActivity : AppCompatActivity() {
             mediaPlaybackRequiresUserGesture = false
             loadWithOverviewMode = true
             useWideViewPort = true
-            // Link "tab baru" dan window.open() akibat klik dibuka di jendela yang sama;
-            // popup otomatis tanpa klik tetap ditolak.
-            setSupportMultipleWindows(false)
+            // Jendela baru dicegat lewat onCreateWindow (hanya situs sendiri yang dibuka);
+            // popup otomatis tanpa klik ditolak langsung oleh WebView.
+            setSupportMultipleWindows(true)
             javaScriptCanOpenWindowsAutomatically = false
         }
 
@@ -371,16 +432,19 @@ class MainActivity : AppCompatActivity() {
                 val host = uri.host
                 return when (uri.scheme) {
                     "http", "https" -> {
-                        // Semua link bebas dibuka, kecuali domain iklan yang dikenal
-                        if (request.isForMainFrame && isBlockedHost(host)) {
-                            Toast.makeText(
-                                this@MainActivity,
-                                "Iklan diblokir: $host",
-                                Toast.LENGTH_SHORT
-                            ).show()
-                            true
-                        } else {
+                        if (!request.isForMainFrame) {
                             false
+                        } else if (isBlockedHost(host)) {
+                            true // domain iklan yang dikenal: tolak diam-diam
+                        } else if (!firstLoadDone && host != null) {
+                            // Halaman pertama (termasuk redirect resminya) selalu diizinkan
+                            allowedHosts.add(host)
+                            false
+                        } else if (isAllowedHost(host)) {
+                            false
+                        } else {
+                            showBlocked(host, request.url.toString())
+                            true
                         }
                     }
                     "file", "about", "data", "blob", "javascript" -> false
@@ -410,8 +474,9 @@ class MainActivity : AppCompatActivity() {
             override fun onPageFinished(view: WebView, url: String?) {
                 progress.visibility = View.GONE
                 swipe.isRefreshing = false
-                if (ENABLE_CLEANER && !cleanerViaDocStart && url != null && url.startsWith("http")) {
-                    view.evaluateJavascript(CLEANER_JS, null)
+                if (url != null && url.startsWith("http")) {
+                    firstLoadDone = true
+                    if (ENABLE_CLEANER && !cleanerViaDocStart) view.evaluateJavascript(CLEANER_JS, null)
                 }
             }
 
@@ -430,6 +495,48 @@ class MainActivity : AppCompatActivity() {
         webView.webChromeClient = object : WebChromeClient() {
             override fun onProgressChanged(view: WebView, newProgress: Int) {
                 progress.progress = newProgress
+            }
+
+            // Jendela baru / popup: dibuka hanya jika tujuannya situs sendiri
+            override fun onCreateWindow(
+                view: WebView?,
+                isDialog: Boolean,
+                isUserGesture: Boolean,
+                resultMsg: Message?
+            ): Boolean {
+                if (resultMsg == null) return false
+                val transport = resultMsg.obj as? WebView.WebViewTransport ?: return false
+                val temp = WebView(this@MainActivity)
+                temp.webViewClient = object : WebViewClient() {
+                    private var handled = false
+
+                    private fun handle(v: WebView, url: String?) {
+                        if (handled || url == null || url == "about:blank") return
+                        handled = true
+                        val host = Uri.parse(url).host
+                        if (isBlockedHost(host)) {
+                            // domain iklan: buang
+                        } else if (isAllowedHost(host)) {
+                            webView.loadUrl(url)
+                        } else {
+                            showBlocked(host, url)
+                        }
+                        v.stopLoading()
+                        Handler(Looper.getMainLooper()).post { v.destroy() }
+                    }
+
+                    override fun shouldOverrideUrlLoading(v: WebView, request: WebResourceRequest): Boolean {
+                        handle(v, request.url.toString())
+                        return true
+                    }
+
+                    override fun onPageStarted(v: WebView, url: String?, favicon: Bitmap?) {
+                        handle(v, url)
+                    }
+                }
+                transport.webView = temp
+                resultMsg.sendToTarget()
+                return true
             }
 
             // Upload file
