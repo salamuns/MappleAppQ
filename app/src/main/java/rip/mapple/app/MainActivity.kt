@@ -42,6 +42,34 @@ class MainActivity : AppCompatActivity() {
     companion object {
         private const val START_URL = "https://mapple.rip"
         private const val OFFLINE_URL = "file:///android_asset/offline.html"
+
+        // Domain iklan/pelacak yang sudah teridentifikasi. Dimasukkan sekali ke daftar blokir
+        // saat aplikasi pertama kali dibuka; bisa diubah lewat sentuhan 3 jari.
+        private val DEFAULT_BLOCKED = setOf(
+            "maonhrxyewyjr.com",
+            "connatix.com",
+            "id5-sync.com",
+            "thirstacock.com",
+            "saguingcomae.cfd",
+            "loggatsiyo.cfd",
+            "cowedd4855ws.sbs",
+            "usrpubtrk.com",
+            "adsco.re",
+            "klhtuvqgsvyzs.online",
+            "adexchangerapid.com",
+            "premiumvertising.com",
+            "ketubahhuesrammed.cyou",
+            "meatusbyway.cfd",
+            "dtscout.com",
+            "llvpn.com",
+            "briguefidibus.com",
+            "ntwkbc42.com",
+            "ntwkbc21.com",
+            "profitableratecpmnetwork.com",
+            "xadsmart.com",
+            "urbanfungose.com",
+            "tiktokcdn-us.com"
+        )
     }
 
     private lateinit var root: FrameLayout
@@ -86,7 +114,17 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
         super.onCreate(savedInstanceState)
-        userBlocked = prefs.getStringSet("blocked", null)?.toSet() ?: emptySet()
+        val savedBlocked = prefs.getStringSet("blocked", null)?.toSet() ?: emptySet()
+        if (!prefs.getBoolean("seed_v1", false)) {
+            val merged = savedBlocked + DEFAULT_BLOCKED
+            prefs.edit()
+                .putStringSet("blocked", HashSet(merged))
+                .putBoolean("seed_v1", true)
+                .apply()
+            userBlocked = merged
+        } else {
+            userBlocked = savedBlocked
+        }
 
         // Tampilan penuh sampai ke area notch/poni
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
