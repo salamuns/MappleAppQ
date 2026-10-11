@@ -1,8 +1,6 @@
 package rip.mapple.app
 
 import android.annotation.SuppressLint
-import android.content.ClipData
-import android.content.ClipboardManager
 import android.content.Intent
 import android.graphics.Bitmap
 import android.net.Uri
@@ -11,7 +9,6 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.Message
-import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
@@ -19,7 +16,6 @@ import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
-import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
@@ -27,49 +23,18 @@ import android.widget.ProgressBar
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
-import java.io.ByteArrayInputStream
-import java.util.concurrent.ConcurrentHashMap
 
 class MainActivity : AppCompatActivity() {
 
     companion object {
         private const val START_URL = "https://mapple.rip"
         private const val OFFLINE_URL = "file:///android_asset/offline.html"
-
-        // Domain iklan/pelacak yang sudah teridentifikasi. Dimasukkan sekali ke daftar blokir
-        // saat aplikasi pertama kali dibuka; bisa diubah lewat sentuhan 3 jari.
-        private val DEFAULT_BLOCKED = setOf(
-            "maonhrxyewyjr.com",
-            "connatix.com",
-            "id5-sync.com",
-            "thirstacock.com",
-            "saguingcomae.cfd",
-            "loggatsiyo.cfd",
-            "cowedd4855ws.sbs",
-            "usrpubtrk.com",
-            "adsco.re",
-            "klhtuvqgsvyzs.online",
-            "adexchangerapid.com",
-            "premiumvertising.com",
-            "ketubahhuesrammed.cyou",
-            "meatusbyway.cfd",
-            "dtscout.com",
-            "llvpn.com",
-            "briguefidibus.com",
-            "ntwkbc42.com",
-            "ntwkbc21.com",
-            "profitableratecpmnetwork.com",
-            "xadsmart.com",
-            "urbanfungose.com",
-            "tiktokcdn-us.com"
-        )
     }
 
     private lateinit var root: FrameLayout
@@ -79,12 +44,6 @@ class MainActivity : AppCompatActivity() {
     private var customView: View? = null
     private var customViewCallback: WebChromeClient.CustomViewCallback? = null
     private var failedUrl: String? = null
-
-    // Pencatat domain: domain yang dipanggil halaman + daftar blokir pilihan pengguna
-    private val seenHosts = ConcurrentHashMap<String, Long>()
-    @Volatile private var userBlocked: Set<String> = emptySet()
-    private var lastDialogMs = 0L
-    private val prefs by lazy { getSharedPreferences("mapple", MODE_PRIVATE) }
 
     // Untuk upload file
     private var filePathCallback: ValueCallback<Array<Uri>>? = null
@@ -114,17 +73,6 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
         super.onCreate(savedInstanceState)
-        val savedBlocked = prefs.getStringSet("blocked", null)?.toSet() ?: emptySet()
-        if (!prefs.getBoolean("seed_v1", false)) {
-            val merged = savedBlocked + DEFAULT_BLOCKED
-            prefs.edit()
-                .putStringSet("blocked", HashSet(merged))
-                .putBoolean("seed_v1", true)
-                .apply()
-            userBlocked = merged
-        } else {
-            userBlocked = savedBlocked
-        }
 
         // Tampilan penuh sampai ke area notch/poni
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
@@ -181,21 +129,6 @@ class MainActivity : AppCompatActivity() {
                     }
                     else -> true
                 }
-            }
-
-            // Catat domain yang dipanggil, dan tolak domain yang Anda blokir
-            override fun shouldInterceptRequest(
-                view: WebView,
-                request: WebResourceRequest
-            ): WebResourceResponse? {
-                val host = request.url.host
-                if (host != null) {
-                    seenHosts[host] = System.currentTimeMillis()
-                    if (userBlocked.any { host == it || host.endsWith(".$it") }) {
-                        return WebResourceResponse("text/plain", "utf-8", ByteArrayInputStream(ByteArray(0)))
-                    }
-                }
-                return super.shouldInterceptRequest(view, request)
             }
 
             override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
@@ -328,49 +261,6 @@ class MainActivity : AppCompatActivity() {
         } else {
             webView.loadUrl(START_URL)
         }
-    }
-
-    // Sentuh dengan 3 jari sekaligus untuk membuka daftar domain
-    override fun dispatchTouchEvent(ev: MotionEvent?): Boolean {
-        if (ev != null && ev.actionMasked == MotionEvent.ACTION_POINTER_DOWN && ev.pointerCount >= 3) {
-            showDomainDialog()
-            return true
-        }
-        return super.dispatchTouchEvent(ev)
-    }
-
-    private fun showDomainDialog() {
-        if (isFinishing) return
-        val now = System.currentTimeMillis()
-        if (now - lastDialogMs < 1500) return
-        lastDialogMs = now
-
-        val seen = seenHosts.entries.sortedByDescending { it.value }.map { it.key }.take(100)
-        val blocked = userBlocked
-        val items = (seen + blocked.filter { it !in seen }).toTypedArray()
-        if (items.isEmpty()) {
-            Toast.makeText(this, "Belum ada domain tercatat", Toast.LENGTH_SHORT).show()
-            return
-        }
-        val checked = BooleanArray(items.size) { items[it] in blocked }
-
-        AlertDialog.Builder(this)
-            .setTitle("Domain yang dipanggil (terbaru di atas). Centang untuk memblokir.")
-            .setMultiChoiceItems(items, checked) { _, which, isChecked -> checked[which] = isChecked }
-            .setPositiveButton("Terapkan") { _, _ ->
-                val newSet = HashSet<String>()
-                for (i in items.indices) if (checked[i]) newSet.add(items[i])
-                userBlocked = newSet
-                prefs.edit().putStringSet("blocked", newSet).apply()
-                webView.reload()
-            }
-            .setNeutralButton("Salin daftar") { _, _ ->
-                val cm = getSystemService(ClipboardManager::class.java)
-                cm.setPrimaryClip(ClipData.newPlainText("domain", items.joinToString("\n")))
-                Toast.makeText(this, "Daftar disalin", Toast.LENGTH_SHORT).show()
-            }
-            .setNegativeButton("Tutup", null)
-            .show()
     }
 
     // Sembunyikan status bar & navigation bar. Geser dari tepi layar untuk memunculkannya sebentar.
