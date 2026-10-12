@@ -1,14 +1,20 @@
+//list
+
 package rip.mapple.app
 
 import android.annotation.SuppressLint
 import android.content.Intent
 import android.graphics.Bitmap
+import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.Message
+import android.text.InputType
+import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
@@ -18,11 +24,16 @@ import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.EditText
 import android.widget.FrameLayout
+import android.widget.LinearLayout
 import android.widget.ProgressBar
+import android.widget.ScrollView
+import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.core.view.WindowCompat
@@ -33,7 +44,17 @@ import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
 class MainActivity : AppCompatActivity() {
 
     companion object {
-        private const val START_URL = "https://mapple.rip"
+        private val DEFAULT_SITES = listOf(
+            "https://7movies.ac", 
+            "https://popcornmovies.ac", 
+            "https://mapple.rip", 
+            "https://cinejoy.pk", 
+            "https://movy.sx", 
+            "https://pstream.cfd", 
+            "https://shuttletv.su", 
+            "https://cinetaro.to" 
+            // tambah yg lain 
+        )
         private const val OFFLINE_URL = "file:///android_asset/offline.html"
     }
 
@@ -44,6 +65,14 @@ class MainActivity : AppCompatActivity() {
     private var customView: View? = null
     private var customViewCallback: WebChromeClient.CustomViewCallback? = null
     private var failedUrl: String? = null
+
+    // Layar pilihan alamat
+    private lateinit var picker: ScrollView
+    private lateinit var pickerList: LinearLayout
+    private var pickerVisible = true
+    private var currentUrl = "https://mapple.rip"
+    private var clearHistoryOnFinish = false
+    private val prefs by lazy { getSharedPreferences("mapple", MODE_PRIVATE) }
 
     // Untuk upload file
     private var filePathCallback: ValueCallback<Array<Uri>>? = null
@@ -64,9 +93,164 @@ class MainActivity : AppCompatActivity() {
     private fun isSameSite(host: String?): Boolean {
         if (host == null) return false
         val target = rootDomain(host)
-        if (target == "mapple.rip") return true
+        if (DEFAULT_SITES.any { rootDomain(Uri.parse(it).host ?: "") == target }) return true
         val current = webView.url?.let { Uri.parse(it).host }
         return current != null && rootDomain(current) == target
+    }
+
+    private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
+
+    private fun loadCustomUrls(): List<String> {
+        val raw = prefs.getString("custom_urls", "") ?: ""
+        return raw.split("\n").filter { it.isNotBlank() }
+    }
+
+    private fun saveCustomUrls(list: List<String>) {
+        prefs.edit().putString("custom_urls", list.joinToString("\n")).apply()
+    }
+
+    // Rapikan input: tambahkan https:// jika belum ada; null jika tidak valid
+    private fun normalizeUrl(raw: String): String? {
+        var t = raw.trim()
+        if (t.isEmpty() || t.contains(" ")) return null
+        if (t.startsWith("http://")) t = "https://" + t.removePrefix("http://")
+        if (!t.startsWith("https://")) t = "https://$t"
+        val host = Uri.parse(t).host ?: return null
+        if (!host.contains(".")) return null
+        return t.trimEnd('/')
+    }
+
+    private fun makeRow(
+        label: String,
+        accent: Boolean,
+        onClick: () -> Unit,
+        onDelete: (() -> Unit)?
+    ): View {
+        val row = LinearLayout(this)
+        row.orientation = LinearLayout.HORIZONTAL
+        row.gravity = Gravity.CENTER_VERTICAL
+        val bg = GradientDrawable()
+        bg.setColor(if (accent) 0xFF3D7BFF.toInt() else 0xFF2B2B3D.toInt())
+        bg.cornerRadius = dp(14).toFloat()
+        row.background = bg
+        row.setPadding(dp(20), dp(16), dp(12), dp(16))
+        row.setOnClickListener { onClick() }
+
+        val tv = TextView(this)
+        tv.text = label
+        tv.textSize = 17f
+        tv.setTextColor(Color.WHITE)
+        row.addView(tv, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+
+        if (onDelete != null) {
+            val x = TextView(this)
+            x.text = "✕"
+            x.textSize = 18f
+            x.setTextColor(0xFFFF8A80.toInt())
+            x.setPadding(dp(16), dp(4), dp(16), dp(4))
+            x.setOnClickListener { onDelete() }
+            row.addView(x)
+        }
+
+        val lp = LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        )
+        lp.bottomMargin = dp(10)
+        row.layoutParams = lp
+        return row
+    }
+
+    private fun refreshPicker() {
+        pickerList.removeAllViews()
+
+        val title = TextView(this)
+        title.text = "Pilih alamat"
+        title.textSize = 24f
+        title.setTextColor(Color.WHITE)
+        val sub = TextView(this)
+        sub.text = "Ketuk salah satu untuk membuka"
+        sub.textSize = 14f
+        sub.setTextColor(0xFFA0A0B8.toInt())
+        sub.setPadding(0, dp(4), 0, dp(20))
+        pickerList.addView(title)
+        pickerList.addView(sub)
+
+        for (url in DEFAULT_SITES) {
+            pickerList.addView(makeRow(url.removePrefix("https://"), false, { openSite(url) }, null))
+        }
+        for (url in loadCustomUrls()) {
+            pickerList.addView(
+                makeRow(url.removePrefix("https://"), false, { openSite(url) }, { confirmDelete(url) })
+            )
+        }
+        pickerList.addView(makeRow("+  Tambah URL lain", true, { showAddDialog() }, null))
+    }
+
+    private fun showAddDialog() {
+        val input = EditText(this)
+        input.hint = "contoh: mapple.example"
+        input.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+        val holder = FrameLayout(this)
+        holder.setPadding(dp(20), dp(8), dp(20), 0)
+        holder.addView(
+            input,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        )
+
+        AlertDialog.Builder(this)
+            .setTitle("Tambah URL")
+            .setView(holder)
+            .setPositiveButton("Simpan") { _, _ ->
+                val url = normalizeUrl(input.text.toString())
+                if (url == null) {
+                    Toast.makeText(this, "Alamat tidak valid", Toast.LENGTH_SHORT).show()
+                } else if (url in DEFAULT_SITES || url in loadCustomUrls()) {
+                    Toast.makeText(this, "Alamat sudah ada", Toast.LENGTH_SHORT).show()
+                } else {
+                    saveCustomUrls(loadCustomUrls() + url)
+                    refreshPicker()
+                }
+            }
+            .setNegativeButton("Batal", null)
+            .show()
+    }
+
+    private fun confirmDelete(url: String) {
+        AlertDialog.Builder(this)
+            .setTitle("Hapus alamat ini?")
+            .setMessage(url.removePrefix("https://"))
+            .setPositiveButton("Hapus") { _, _ ->
+                saveCustomUrls(loadCustomUrls().filter { it != url })
+                refreshPicker()
+            }
+            .setNegativeButton("Batal", null)
+            .show()
+    }
+
+    private fun showPicker() {
+        pickerVisible = true
+        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        webView.stopLoading()
+        webView.loadUrl("about:blank")
+        swipe.visibility = View.GONE
+        progress.visibility = View.GONE
+        refreshPicker()
+        picker.visibility = View.VISIBLE
+    }
+
+    private fun openSite(url: String) {
+        currentUrl = url
+        failedUrl = null
+        clearHistoryOnFinish = true
+        pickerVisible = false
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        picker.visibility = View.GONE
+        swipe.visibility = View.VISIBLE
+        webView.loadUrl(url)
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -89,7 +273,7 @@ class MainActivity : AppCompatActivity() {
             setOnChildScrollUpCallback { _, _ -> webView.scrollY > 0 }
             setOnRefreshListener {
                 if (webView.url?.startsWith(OFFLINE_URL) == true) {
-                    webView.loadUrl(failedUrl ?: START_URL)
+                    webView.loadUrl(failedUrl ?: currentUrl)
                 } else {
                     webView.reload()
                 }
@@ -101,6 +285,15 @@ class MainActivity : AppCompatActivity() {
         }
         root.addView(swipe, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
         root.addView(progress, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 8))
+
+        pickerList = LinearLayout(this)
+        pickerList.orientation = LinearLayout.VERTICAL
+        pickerList.setPadding(dp(24), dp(72), dp(24), dp(40))
+        picker = ScrollView(this)
+        picker.setBackgroundColor(0xFF1E1E2E.toInt())
+        picker.isFillViewport = true
+        picker.addView(pickerList)
+        root.addView(picker, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
         setContentView(root)
         applyFullscreen()
 
@@ -138,6 +331,10 @@ class MainActivity : AppCompatActivity() {
             override fun onPageFinished(view: WebView, url: String?) {
                 progress.visibility = View.GONE
                 swipe.isRefreshing = false
+                if (clearHistoryOnFinish && url != null && url.startsWith("http")) {
+                    view.clearHistory()
+                    clearHistoryOnFinish = false
+                }
             }
 
             override fun onReceivedError(
@@ -246,20 +443,28 @@ class MainActivity : AppCompatActivity() {
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
                 when {
-                    customView != null -> webView.webChromeClient?.onHideCustomView()
-                    webView.canGoBack() -> webView.goBack()
-                    else -> {
+                    // Di layar pilihan: keluar aplikasi
+                    pickerVisible -> {
                         isEnabled = false
                         onBackPressedDispatcher.onBackPressed()
                     }
+                    customView != null -> webView.webChromeClient?.onHideCustomView()
+                    webView.canGoBack() -> webView.goBack()
+                    // Sudah di halaman pertama: kembali ke layar pilihan
+                    else -> showPicker()
                 }
             }
         })
 
-        if (savedInstanceState != null) {
+        if (savedInstanceState != null && !savedInstanceState.getBoolean("picker", true)) {
+            currentUrl = savedInstanceState.getString("current") ?: currentUrl
+            pickerVisible = false
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            picker.visibility = View.GONE
+            swipe.visibility = View.VISIBLE
             webView.restoreState(savedInstanceState)
         } else {
-            webView.loadUrl(START_URL)
+            showPicker()
         }
     }
 
@@ -278,6 +483,8 @@ class MainActivity : AppCompatActivity() {
 
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
+        outState.putBoolean("picker", pickerVisible)
+        outState.putString("current", currentUrl)
         webView.saveState(outState)
     }
 
